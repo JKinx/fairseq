@@ -122,6 +122,19 @@ class TransformerModel(FairseqEncoderDecoderModel):
                                  'Must be used with adaptive_loss criterion'),
         parser.add_argument('--adaptive-softmax-dropout', type=float, metavar='D',
                             help='sets adaptive softmax dropout for the tail projections')
+
+        parser.add_argument('--encoder-mode', type=str, metavar="STR", 
+            default="soft", help="attention mode for encoder")
+        parser.add_argument('--encoder-temperature', type=float, metavar="D", 
+            default=-1, help="gumbel temperature for encoder")
+        parser.add_argument('--decoder-mode', type=str, metavar="STR", 
+            default="soft", help="attention mode for decoder")
+        parser.add_argument('--decoder-temperature', type=float, metavar="D", 
+            default=-1, help="gumbel temperature for decoder")
+        parser.add_argument('--enc-dec-mode', type=str, metavar="STR", 
+            default="soft", help="attention mode for encoder-decoder")
+        parser.add_argument('--enc-dec-temperature', type=float, metavar="D", 
+            default=-1, help="gumbel temperature for encoder-decoder")
         # fmt: on
 
     @classmethod
@@ -172,7 +185,7 @@ class TransformerModel(FairseqEncoderDecoderModel):
 
         encoder = cls.build_encoder(args, src_dict, encoder_embed_tokens)
         decoder = cls.build_decoder(args, tgt_dict, decoder_embed_tokens)
-        return TransformerModel(encoder, decoder)
+        return TransformerModel(encoder, decoder, args)
 
     @classmethod
     def build_encoder(cls, args, src_dict, embed_tokens):

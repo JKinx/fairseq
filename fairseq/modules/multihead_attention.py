@@ -10,6 +10,22 @@ import torch.nn.functional as F
 
 from fairseq import utils
 
+def sample_gumbel(input):
+    # sample from a gumbel distribution Gumbel(0,1)
+    # u ~ Uniform(0,1)
+    # g = -log(-log(u))
+    noise = torch.empty_like(input).uniform_()
+    eps = 1e-20
+    noise.add_(eps).log_().neg_()
+    noise.add_(eps).log_().neg_()
+    return noise
+
+def gumbel_softmax_sample(log_probs, temperature):
+    # sample from gumble softmax to approximate sampling from categorical distribution
+    noise = sample_gumbel(log_probs)
+    x = (log_probs + noise) / temperature
+    x = F.softmax(x, dim=-1)
+    return x.view_as(log_probs)
 
 class MultiheadAttention(nn.Module):
     """Multi-headed attention.
@@ -90,8 +106,9 @@ class MultiheadAttention(nn.Module):
         if self.bias_v is not None:
             nn.init.xavier_normal_(self.bias_v)
 
-    def forward(self, query, key, value, key_padding_mask=None, incremental_state=None,
-                need_weights=True, static_kv=False, attn_mask=None):
+    def forward(self, h, h_p=None, key_padding_mask=None, 
+        incremental_state=None,vneed_weights=True, static_kv=False, 
+        attn_mask=None, mode="soft", temperature=-1):
         """Input shape: Time x Batch x Channel
 
         Timesteps can be masked by supplying a T x T mask in the
@@ -99,32 +116,9 @@ class MultiheadAttention(nn.Module):
         the key by passing a binary ByteTensor (`key_padding_mask`) with shape:
         batch x src_len, where padding elements are indicated by 1s.
         """
-        tgt_len, bsz, embed_dim = query.size()
+        tgt_len, bsz, embed_dim = h.size()
         assert embed_dim == self.embed_dim
         assert list(query.size()) == [tgt_len, bsz, embed_dim]
-
-        if self.enable_torch_version and not self.onnx_trace and incremental_state is None and not static_kv:
-            if self.qkv_same_dim:
-                return F.multi_head_attention_forward(query, key, value,
-                                                      self.embed_dim, self.num_heads,
-                                                      self.in_proj_weight,
-                                                      self.in_proj_bias, self.bias_k, self.bias_v,
-                                                      self.add_zero_attn, self.dropout,
-                                                      self.out_proj.weight, self.out_proj.bias,
-                                                      self.training, key_padding_mask, need_weights,
-                                                      attn_mask)
-            else:
-                return F.multi_head_attention_forward(query, key, value,
-                                                      self.embed_dim, self.num_heads,
-                                                      torch.empty([0]),
-                                                      self.in_proj_bias, self.bias_k, self.bias_v,
-                                                      self.add_zero_attn, self.dropout,
-                                                      self.out_proj.weight, self.out_proj.bias,
-                                                      self.training, key_padding_mask, need_weights,
-                                                      attn_mask, use_separate_proj_weight=True,
-                                                      q_proj_weight=self.q_proj_weight,
-                                                      k_proj_weight=self.k_proj_weight,
-                                                      v_proj_weight=self.v_proj_weight)
 
         if incremental_state is not None:
             saved_state = self._get_input_buffer(incremental_state)
@@ -133,27 +127,25 @@ class MultiheadAttention(nn.Module):
                 # key and value if they are static
                 if static_kv:
                     assert self.encoder_decoder_attention and not self.self_attention
-                    key = value = None
+                    h_p = None
         else:
             saved_state = None
 
         if self.self_attention:
             # self-attention
-            q, k, v = self.in_proj_qkv(query)
+            q, k, v = self.in_proj_qkv(h)
         elif self.encoder_decoder_attention:
             # encoder-decoder attention
-            q = self.in_proj_q(query)
-            if key is None:
+            q = self.in_proj_q(h)
+            if h_p is None:
                 assert value is None
                 k = v = None
             else:
-                k = self.in_proj_k(key)
-                v = self.in_proj_v(key)
-
+                k = self.in_proj_k(h_p)
+                v = self.in_proj_v(h_p)
         else:
-            q = self.in_proj_q(query)
-            k = self.in_proj_k(key)
-            v = self.in_proj_v(value)
+            raise ValueError("Invalid Mode")
+
         q *= self.scaling
 
         if self.bias_k is not None:
@@ -239,12 +231,28 @@ class MultiheadAttention(nn.Module):
                 )
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
-        attn_weights = utils.softmax(
+        attn_p = utils.softmax(
             attn_weights, dim=-1, onnx_trace=self.onnx_trace,
         ).type_as(attn_weights)
-        attn_weights = F.dropout(attn_weights, p=self.dropout, training=self.training)
 
-        attn = torch.bmm(attn_weights, v)
+        if mode == "soft":
+            attn_p = F.dropout(attn_p, p=self.dropout, training=self.training)
+            attn = torch.bmm(attn_weights, v)
+            sample = None
+        elif mode == "gumbel":
+            assert(temperature != -1)
+            sample = gumbel_softmax_sample(F.log_softmax(attn_weights, dim = -1), temperature)
+            attn = torch.bmm(sample, v)
+        elif mode == "greedy":
+            sample_id = attn_weights.view(-1, src_len).argmax(dim=-1)
+            sample_id = sample_id.view(bsz * self.num_heads, tgt_len, 1)
+            sample = attn_weights.new_full(attn_weights.size(), 0.).to(attn_weights)
+            sample.scatter_(2, sample_id, 1.)
+            attn = torch.bmm(sample, v)
+        else:
+            raise ValueError("Invalid Attention Mode!")
+
+
         assert list(attn.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
         if (self.onnx_trace and attn.size(1) == 1):
             # when ONNX tracing a single decoder step (sequence length == 1)
@@ -255,13 +263,13 @@ class MultiheadAttention(nn.Module):
         attn = self.out_proj(attn)
 
         if need_weights:
-            # average attention weights over heads
-            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
-            attn_weights = attn_weights.sum(dim=1) / self.num_heads
+            attn_data = {"attn" : attn_p.view(bsz, self.num_heads, tgt_len, src_len).detach()}
+            if sample is not None:
+                attn_data.update({"sample" : sample.view(bsz, self.num_heads, tgt_len, src_len).detach()})
         else:
-            attn_weights = None
+            attn_data = None
 
-        return attn, attn_weights
+        return attn, attn_data
 
     def in_proj_qkv(self, query):
         return self._in_proj(query).chunk(3, dim=-1)

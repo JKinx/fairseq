@@ -222,7 +222,8 @@ class TransformerEncoder(FairseqEncoder):
         else:
             self.layer_norm = None
 
-    def forward(self, src_tokens, src_lengths):
+    def forward(self, src_tokens, src_lengths, encoder_mode="soft", 
+        encoder_temperature=-1, need_weights=False, **unused):
         """
         Args:
             src_tokens (LongTensor): tokens in the source language of shape
@@ -252,8 +253,15 @@ class TransformerEncoder(FairseqEncoder):
             encoder_padding_mask = None
 
         # encoder layers
+        attn_data_list = []
         for layer in self.layers:
-            x = layer(x, encoder_padding_mask)
+            x, attn_data = layer(
+                x, 
+                encoder_padding_mask, 
+                encoder_mode=encoder_mode,
+                encoder_temperature=encoder_temperature,
+                need_weights=need_weights)
+            attn_data_list.append(attn_data)
 
         if self.layer_norm:
             x = self.layer_norm(x)
@@ -261,6 +269,7 @@ class TransformerEncoder(FairseqEncoder):
         return {
             'encoder_out': x,  # T x B x C
             'encoder_padding_mask': encoder_padding_mask,  # B x T
+            'encoder_attn_data_list' : attn_data_list
         }
 
     def reorder_encoder_out(self, encoder_out, new_order):
@@ -375,7 +384,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         else:
             self.layer_norm = None
 
-    def forward(self, prev_output_tokens, encoder_out=None, incremental_state=None, **unused):
+    def forward(self, prev_output_tokens, encoder_out=None, incremental_state=None, decoder_mode="soft", decoder_temperature=-1, enc_dec_mode="soft", enc_dec_temperature=-1, need_weights=False, **unused):
         """
         Args:
             prev_output_tokens (LongTensor): previous decoder outputs of shape
@@ -390,11 +399,11 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 - the decoder's output of shape `(batch, tgt_len, vocab)`
                 - a dictionary with any model-specific outputs
         """
-        x, extra = self.extract_features(prev_output_tokens, encoder_out, incremental_state)
+        x, extra = self.extract_features(prev_output_tokens, encoder_out, incremental_state, decoder_mode, decoder_temperature, enc_dec_mode, enc_dec_temperature, need_weights, **unused)
         x = self.output_layer(x)
         return x, extra
 
-    def extract_features(self, prev_output_tokens, encoder_out=None, incremental_state=None, **unused):
+    def extract_features(self, prev_output_tokens, encoder_out=None, incremental_state=None, decoder_mode="soft", decoder_temperature=-1, enc_dec_mode="soft", enc_dec_temperature=-1, need_weights=False, **unused):
         """
         Similar to *forward* but only return features.
 
@@ -426,20 +435,24 @@ class TransformerDecoder(FairseqIncrementalDecoder):
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
-        attn = None
 
-        inner_states = [x]
+        attn_data_list = []
 
         # decoder layers
         for layer in self.layers:
-            x, attn = layer(
+            x, attn_data = layer(
                 x,
-                encoder_out['encoder_out'] if encoder_out is not None else None,
-                encoder_out['encoder_padding_mask'] if encoder_out is not None else None,
-                incremental_state,
+                encoder_out=encoder_out['encoder_out'] if encoder_out is not None else None,
+                encoder_padding_mask=encoder_out['encoder_padding_mask'] if encoder_out is not None else None,
+                incremental_state=incremental_state,
                 self_attn_mask=self.buffered_future_mask(x) if incremental_state is None else None,
+                decoder_mode=decoder_mode,
+                decoder_temperature=decoder_temperature,
+                enc_dec_mode=enc_dec_mode,
+                enc_dec_temperature=enc_dec_temperature,
+                need_weights=need_weights
             )
-            inner_states.append(x)
+            attn_data_list.append(attn_data)
 
         if self.layer_norm:
             x = self.layer_norm(x)
@@ -450,7 +463,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         if self.project_out_dim is not None:
             x = self.project_out_dim(x)
 
-        return x, {'attn': attn, 'inner_states': inner_states}
+        return x, attn_data_list
 
     def output_layer(self, features, **kwargs):
         """Project features to the vocabulary size."""

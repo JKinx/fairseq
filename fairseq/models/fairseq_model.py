@@ -15,7 +15,15 @@ import torch.nn.functional as F
 from fairseq import utils
 from fairseq.data import Dictionary
 from fairseq.models import FairseqDecoder, FairseqEncoder
+from copy import deepcopy as dc
 
+def gumbel_to_greedy(attn_args):
+    for key in attn_args:
+        if attn_args[key] == "gumbel":
+            attn_args[key] = "greedy"
+        elif attn_args[key] == "ent-gumbel":
+            attn_args[key] = "greedy"
+    return attn_args
 
 class BaseFairseqModel(nn.Module):
     """Base class for fairseq models."""
@@ -187,11 +195,17 @@ class FairseqEncoderDecoderModel(BaseFairseqModel):
         decoder (FairseqDecoder): the decoder
     """
 
-    def __init__(self, encoder, decoder):
+    def __init__(self, encoder, decoder, args):
         super().__init__()
 
         self.encoder = encoder
         self.decoder = decoder
+        self.attn_args = {"encoder_mode" : args.encoder_mode, 
+                         "encoder_temperature" : args.encoder_temperature,
+                         "decoder_mode" : args.decoder_mode,
+                         "decoder_temperature" : args.decoder_temperature,
+                         "enc_dec_mode" : args.enc_dec_mode,
+                         "enc_dec_temperature" : args.enc_dec_temperature}
         assert isinstance(self.encoder, FairseqEncoder)
         assert isinstance(self.decoder, FairseqDecoder)
 
@@ -218,6 +232,10 @@ class FairseqEncoderDecoderModel(BaseFairseqModel):
                 - the decoder's output of shape `(batch, tgt_len, vocab)`
                 - a dictionary with any model-specific outputs
         """
+        attn_args = dc(self.attn_args)
+        if not self.training:
+            attn_args = gumbel_to_greedy(attn_args)
+        kwargs.update(attn_args)
         encoder_out = self.encoder(src_tokens, src_lengths=src_lengths, **kwargs)
         decoder_out = self.decoder(prev_output_tokens, encoder_out=encoder_out, **kwargs)
         return decoder_out
@@ -231,6 +249,11 @@ class FairseqEncoderDecoderModel(BaseFairseqModel):
                 - the decoder's features of shape `(batch, tgt_len, embed_dim)`
                 - a dictionary with any model-specific outputs
         """
+        attn_args = dc(self.attn_args)
+        if not self.training:
+            attn_args = gumbel_to_greedy(attn_args)
+        kwargs.update(attn_args)
+        
         encoder_out = self.encoder(src_tokens, src_lengths=src_lengths, **kwargs)
         features = self.decoder.extract_features(prev_output_tokens, encoder_out=encoder_out, **kwargs)
         return features

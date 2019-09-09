@@ -64,7 +64,8 @@ class TransformerEncoderLayer(nn.Module):
                     ] = state_dict[k]
                     del state_dict[k]
 
-    def forward(self, x, encoder_padding_mask, attn_mask=None):
+    def forward(self, x, encoder_padding_mask, attn_mask=None, 
+        encoder_mode="soft", encoder_temperature=-1, need_weights=False):
         """
         Args:
             x (Tensor): input to the layer of shape `(seq_len, batch, embed_dim)`
@@ -91,7 +92,13 @@ class TransformerEncoderLayer(nn.Module):
         # will become -inf, which results in NaN in model parameters
         # TODO: to formally solve this problem, we need to change fairseq's
         # MultiheadAttention. We will do this later on.
-        x, _ = self.self_attn(query=x, key=x, value=x, key_padding_mask=encoder_padding_mask)
+        x, attn_data = self.self_attn(
+            h=x, 
+            key_padding_mask=encoder_padding_mask, 
+            attn_mask=attn_mask,
+            mode=encoder_mode,
+            temperature=encoder_temperature,
+            need_weights=need_weights)
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
         x = self.maybe_layer_norm(self.self_attn_layer_norm, x, after=True)
@@ -104,7 +111,7 @@ class TransformerEncoderLayer(nn.Module):
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
         x = self.maybe_layer_norm(self.final_layer_norm, x, after=True)
-        return x
+        return x, attn_data
 
     def maybe_layer_norm(self, layer_norm, x, before=False, after=False):
         assert before ^ after
@@ -188,11 +195,16 @@ class TransformerDecoderLayer(nn.Module):
         x,
         encoder_out=None,
         encoder_padding_mask=None,
-        incremental_state=None,
-        prev_self_attn_state=None,
-        prev_attn_state=None,
         self_attn_mask=None,
         self_attn_padding_mask=None,
+        decoder_mode="soft",
+        decoder_temperature=-1,
+        enc_dec_mode="soft",
+        enc_dec_temperature=-1,
+        incremental_state=None,
+        need_weights=False,
+        prev_self_attn_state=None,
+        prev_attn_state=None,   
     ):
         """
         Args:
@@ -211,14 +223,14 @@ class TransformerDecoderLayer(nn.Module):
             prev_key, prev_value = prev_self_attn_state
             saved_state = {"prev_key": prev_key, "prev_value": prev_value}
             self.self_attn._set_input_buffer(incremental_state, saved_state)
-        x, attn = self.self_attn(
-            query=x,
-            key=x,
-            value=x,
+        x, self_attn_data = self.self_attn(
+            h=x,
             key_padding_mask=self_attn_padding_mask,
+            attn_mask = self_attn_mask,
+            mode=decoder_mode,
+            temperature=decoder_temperature,
             incremental_state=incremental_state,
-            need_weights=False,
-            attn_mask=self_attn_mask,
+            need_weights=need_weights,
         )
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
@@ -233,14 +245,15 @@ class TransformerDecoderLayer(nn.Module):
                 prev_key, prev_value = prev_attn_state
                 saved_state = {"prev_key": prev_key, "prev_value": prev_value}
                 self.encoder_attn._set_input_buffer(incremental_state, saved_state)
-            x, attn = self.encoder_attn(
-                query=x,
-                key=encoder_out,
-                value=encoder_out,
+            x, enc_dec_attn_data = self.encoder_attn(
+                h=x,
+                h_p=encoder_out,
                 key_padding_mask=encoder_padding_mask,
+                mode=enc_dec_mode,
+                temperature=enc_dec_temperature,
                 incremental_state=incremental_state,
                 static_kv=True,
-                need_weights=(not self.training and self.need_attn),
+                need_weights=need_weights,
             )
             x = F.dropout(x, p=self.dropout, training=self.training)
             x = residual + x
@@ -254,11 +267,16 @@ class TransformerDecoderLayer(nn.Module):
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
         x = self.maybe_layer_norm(self.final_layer_norm, x, after=True)
+
+        attn_data = {"self" : self_attn_data}
+        if self.encoder_attn:
+            attn_data.update({"encoder_decoder" : enc_dec_attn_data})
+
         if self.onnx_trace and incremental_state is not None:
             saved_state = self.self_attn._get_input_buffer(incremental_state)
             self_attn_state = saved_state["prev_key"], saved_state["prev_value"]
-            return x, attn, self_attn_state
-        return x, attn
+            return x, attn_data, self_attn_state
+        return x, attn_data
 
     def maybe_layer_norm(self, layer_norm, x, before=False, after=False):
         assert before ^ after

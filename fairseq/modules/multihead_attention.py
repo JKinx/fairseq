@@ -107,7 +107,7 @@ class MultiheadAttention(nn.Module):
             nn.init.xavier_normal_(self.bias_v)
 
     def forward(self, h, h_p=None, key_padding_mask=None, 
-        incremental_state=None,vneed_weights=True, static_kv=False, 
+        incremental_state=None, need_weights=True, static_kv=False, 
         attn_mask=None, mode="soft", temperature=-1):
         """Input shape: Time x Batch x Channel
 
@@ -118,7 +118,7 @@ class MultiheadAttention(nn.Module):
         """
         tgt_len, bsz, embed_dim = h.size()
         assert embed_dim == self.embed_dim
-        assert list(query.size()) == [tgt_len, bsz, embed_dim]
+        assert list(h.size()) == [tgt_len, bsz, embed_dim]
 
         if incremental_state is not None:
             saved_state = self._get_input_buffer(incremental_state)
@@ -237,7 +237,7 @@ class MultiheadAttention(nn.Module):
 
         if mode == "soft":
             attn_p = F.dropout(attn_p, p=self.dropout, training=self.training)
-            attn = torch.bmm(attn_weights, v)
+            attn = torch.bmm(attn_p, v)
             sample = None
         elif mode == "gumbel":
             assert(temperature != -1)

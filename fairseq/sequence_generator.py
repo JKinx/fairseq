@@ -535,7 +535,6 @@ class EnsembleModel(torch.nn.Module):
         for model in models:
             self.attn_args = model.attn_args
             break
-        self.attn_args = 
         # if all(isinstance(m.decoder, FairseqIncrementalDecoder) for m in models):
         #     self.incremental_states = {m: {} for m in models}
 

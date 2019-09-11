@@ -1,3 +1,4 @@
+
 # Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
@@ -9,7 +10,13 @@ import torch
 
 from fairseq import search
 from fairseq.models import FairseqIncrementalDecoder
+from copy import deepcopy as dc
 
+def gumbel_to_greedy(attn_args):
+    for key in attn_args:
+        if attn_args[key] == "gumbel":
+            attn_args[key] = "greedy"
+    return attn_args
 
 class SequenceGenerator(object):
     def __init__(
@@ -143,6 +150,8 @@ class SequenceGenerator(object):
             )
 
         # compute the encoder output for each beam
+        attn_args = gumbel_to_greedy(dc(model.attn_args))
+        encoder_input.update(dc(attn_args))
         encoder_outs = model.forward_encoder(encoder_input)
         new_order = torch.arange(bsz).view(-1, 1).repeat(1, beam_size).view(-1)
         new_order = new_order.to(src_tokens.device).long()
@@ -289,7 +298,7 @@ class SequenceGenerator(object):
                 encoder_outs = model.reorder_encoder_out(encoder_outs, reorder_state)
 
             lprobs, avg_attn_scores = model.forward_decoder(
-                tokens[:, :step + 1], encoder_outs, temperature=self.temperature,
+                tokens[:, :step + 1], encoder_outs, temperature=self.temperature, **dc(attn_args)
             )
 
             lprobs[:, self.pad] = -math.inf  # never select pad
@@ -523,8 +532,12 @@ class EnsembleModel(torch.nn.Module):
         super().__init__()
         self.models = torch.nn.ModuleList(models)
         self.incremental_states = None
-        if all(isinstance(m.decoder, FairseqIncrementalDecoder) for m in models):
-            self.incremental_states = {m: {} for m in models}
+        for model in models:
+            self.attn_args = model.attn_args
+            break
+        self.attn_args = 
+        # if all(isinstance(m.decoder, FairseqIncrementalDecoder) for m in models):
+        #     self.incremental_states = {m: {} for m in models}
 
     def has_encoder(self):
         return hasattr(self.models[0], 'encoder')
@@ -539,7 +552,7 @@ class EnsembleModel(torch.nn.Module):
         return [model.encoder(**encoder_input) for model in self.models]
 
     @torch.no_grad()
-    def forward_decoder(self, tokens, encoder_outs, temperature=1.):
+    def forward_decoder(self, tokens, encoder_outs, temperature=1., **kwargs):
         if len(self.models) == 1:
             return self._decode_one(
                 tokens,
@@ -548,6 +561,7 @@ class EnsembleModel(torch.nn.Module):
                 self.incremental_states,
                 log_probs=True,
                 temperature=temperature,
+                **kwargs
             )
 
         log_probs = []
@@ -574,7 +588,7 @@ class EnsembleModel(torch.nn.Module):
 
     def _decode_one(
         self, tokens, model, encoder_out, incremental_states, log_probs,
-        temperature=1.,
+        temperature=1., **kwargs
     ):
         if self.incremental_states is not None:
             decoder_out = list(model.decoder(tokens, encoder_out, incremental_state=self.incremental_states[model]))
@@ -583,14 +597,14 @@ class EnsembleModel(torch.nn.Module):
         decoder_out[0] = decoder_out[0][:, -1:, :]
         if temperature != 1.:
             decoder_out[0].div_(temperature)
-        attn = decoder_out[1]
-        if type(attn) is dict:
-            attn = attn.get('attn', None)
-        if attn is not None:
-            attn = attn[:, -1, :]
+        # attn = decoder_out[1]
+        # if type(attn) is dict:
+        #     attn = attn.get('attn', None)
+        # if attn is not None:
+        #     attn = attn[:, -1, :]
         probs = model.get_normalized_probs(decoder_out, log_probs=log_probs)
         probs = probs[:, -1, :]
-        return probs, attn
+        return probs, None
 
     def reorder_encoder_out(self, encoder_outs, new_order):
         if not self.has_encoder():

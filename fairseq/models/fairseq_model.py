@@ -366,9 +366,11 @@ class FairseqLanguageModel(BaseFairseqModel):
         decoder (FairseqDecoder): the decoder
     """
 
-    def __init__(self, decoder):
+    def __init__(self, decoder, args):
         super().__init__()
         self.decoder = decoder
+        self.attn_args = {"decoder_mode" : args.encoder_mode, 
+                         "decoder_temperature" : args.encoder_temperature}
         assert isinstance(self.decoder, FairseqDecoder)
 
     def forward(self, src_tokens, **kwargs):
@@ -387,6 +389,10 @@ class FairseqLanguageModel(BaseFairseqModel):
                 - the decoder's output of shape `(batch, seq_len, vocab)`
                 - a dictionary with any model-specific outputs
         """
+        attn_args = dc(self.attn_args)
+        if not self.training:
+            attn_args = gumbel_to_greedy(attn_args)
+        kwargs.update(attn_args)
         return self.decoder(src_tokens, **kwargs)
 
     def extract_features(self, src_tokens, **kwargs):
@@ -398,6 +404,10 @@ class FairseqLanguageModel(BaseFairseqModel):
                 - the decoder's features of shape `(batch, seq_len, embed_dim)`
                 - a dictionary with any model-specific outputs
         """
+        attn_args = dc(self.attn_args)
+        if not self.training:
+            attn_args = gumbel_to_greedy(attn_args)
+        kwargs.update(attn_args)
         return self.decoder.extract_features(src_tokens, **kwargs)
 
     def output_layer(self, features, **kwargs):

@@ -98,6 +98,11 @@ class TransformerLanguageModel(FairseqLanguageModel):
                             help='if set, ties the projection weights of adaptive softmax and adaptive input')
         parser.add_argument('--decoder-learned-pos', action='store_true',
                             help='use learned positional embeddings in the decoder')
+
+        parser.add_argument('--decoder-mode', type=str, metavar="STR", 
+            default="soft", help="attention mode for decoder")
+        parser.add_argument('--decoder-temperature', type=float, metavar="D", 
+            default=-1, help="gumbel temperature for decoder")
         # fmt: on
 
     @classmethod
@@ -135,7 +140,7 @@ class TransformerLanguageModel(FairseqLanguageModel):
         decoder = TransformerDecoder(
             args, task.target_dictionary, embed_tokens, no_encoder_attn=True,
         )
-        return TransformerLanguageModel(decoder)
+        return TransformerLanguageModel(decoder, args)
 
 
 @register_model_architecture('transformer_lm', 'transformer_lm')

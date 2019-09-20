@@ -590,9 +590,9 @@ class EnsembleModel(torch.nn.Module):
         temperature=1., **kwargs
     ):
         if self.incremental_states is not None:
-            decoder_out = list(model.decoder(tokens, encoder_out, incremental_state=self.incremental_states[model]))
+            decoder_out = list(model.decoder(tokens, encoder_out, incremental_state=self.incremental_states[model], **kwargs))
         else:
-            decoder_out = list(model.decoder(tokens, encoder_out))
+            decoder_out = list(model.decoder(tokens, encoder_out, **kwargs))
         decoder_out[0] = decoder_out[0][:, -1:, :]
         if temperature != 1.:
             decoder_out[0].div_(temperature)
